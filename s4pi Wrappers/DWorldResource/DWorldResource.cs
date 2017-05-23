@@ -32,7 +32,7 @@ namespace DWorldResource
         const Int32 recommendedApiVersion = 1;
 
         #region Attributes
-        private TLVListChunk objectManager;
+        private OMGSChunk objectManager;
         #endregion
 
         #region Constructors
@@ -45,12 +45,18 @@ namespace DWorldResource
         #endregion
 
         #region Data I/O
-        void Parse(Stream s) { objectManager = (TLVListChunk)TagLengthValue.TagLengthValueFactory(requestedApiVersion, OnResourceChanged, s, new String[] { "OMGS" }); }
+        void Parse(Stream s)
+        {
+            objectManager = (OMGSChunk)TagLengthValue.TagLengthValueFactory(requestedApiVersion, OnResourceChanged, s);
+            if (checking) if (!objectManager.tag.Equals((uint)FOURCC("OMGS")))
+                    throw new InvalidDataException(String.Format("Unexpected Tag read; expected 'OMGS'; read '{0}'", FOURCC(objectManager.tag)));
+        }
 
         protected override Stream UnParse()
         {
             MemoryStream ms = new MemoryStream();
 
+            if (objectManager == null) objectManager = new OMGSChunk(requestedApiVersion, OnResourceChanged);
             objectManager.UnParse(ms);
 
             ms.Flush();
@@ -62,7 +68,7 @@ namespace DWorldResource
         public abstract class TagLengthValue : AHandlerElement, IEquatable<TagLengthValue>
         {
             #region Attributes
-            protected UInt32 tag;
+            internal UInt32 tag;
             #endregion
 
             #region Constructors
@@ -70,14 +76,10 @@ namespace DWorldResource
             #endregion
 
             #region Data I/O
-            public static TagLengthValue TagLengthValueFactory(int apiVersion, EventHandler handler, Stream s, IEnumerable<String> _validTags = null)
+            public static TagLengthValue TagLengthValueFactory(int apiVersion, EventHandler handler, Stream s)
             {
-                //List<uint> validTags = _validTags == null ? null : new List<uint>( _validTags.Select<String,uint>( _s => (uint)FOURCC(_s) ) );
                 BinaryReader r = new BinaryReader(s);
                 UInt32 tag = r.ReadUInt32();
-                if (checking) if (_validTags != null && !_validTags.Contains(FOURCC(tag)))
-                        throw new InvalidDataException(String.Format("Invalid Tag read: '{0}'; expected one of: ('{1}'); at 0x{2:X8}", FOURCC(tag), String.Join("', '", _validTags), s.Position));
-
                 UInt32 length = r.ReadUInt32();
 
                 TagLengthValue chunk = null;
@@ -85,24 +87,16 @@ namespace DWorldResource
                 long pos = s.Position;
                 switch (FOURCC(tag))
                 {
-                    case "OMGS": chunk = new TLVListChunk(apiVersion, handler, tag, new [] {
-                        "OMGR"
-                    }, s, length); break;
-                    case "OMGR": chunk = new TLVListChunk(apiVersion, handler, tag, new[] {
-                        "ID  ", "LOT ", "OBJ ", "REFS"
-                    }, s, length); break;
+                    case "OMGS": chunk = new OMGSChunk(apiVersion, handler, s, length); break;
+                    case "OMGR": chunk = new OMGRChunk(apiVersion, handler, s, length); break;
+                    case "LOT ": chunk = new LOT_Chunk(apiVersion, handler, s, length); break;
+                    case "OBJ ": chunk = new OBJ_Chunk(apiVersion, handler, s, length); break;
                     case "ID  ": chunk = new UInt64Chunk(apiVersion, handler, tag, s); break;
-                    case "LOT ": chunk = new TLVListChunk(apiVersion, handler, tag, new[] {
-                        "SIZX", "SIZZ", "POS ", "ROT "
-                    }, s, length); break;
-                    case "OBJ ": chunk = new TLVListChunk(apiVersion, handler, tag, new [] {
-                        "ID  ", "POS ", "ROT ", "MODL", "LEVL", "SCAL", "SCRP", "TRES", "DEFG", "DGUD", "MLOD", "PTID", "SLOT"
-                    }, s, length); break;
                     case "REFS": chunk = new UnusedChunk(apiVersion, handler, tag, s, length); break;
                     case "SIZX": chunk = new UInt32Chunk(apiVersion, handler, tag, s); break;
                     case "SIZZ": chunk = new UInt32Chunk(apiVersion, handler, tag, s); break;
                     case "POS ": chunk = new VertexChunk(apiVersion, handler, tag, s); break;
-                    case "ROT ": 
+                    case "ROT ":
                         if (length == sizeof(Single))
                             chunk = new SingleChunk(apiVersion, handler, tag, s);
                         else if (length == 4 * sizeof(Single))
@@ -141,23 +135,21 @@ namespace DWorldResource
                 long pos = s.Position;
                 w.Write((UInt32)0);
 
-                this.UnParse(s);
+                this.WriteTLVData(s);
 
                 long newPos = s.Position;
                 s.Seek(pos, SeekOrigin.Begin);
                 w.Write((UInt32)(newPos - pos));
                 s.Seek(newPos, SeekOrigin.Begin);
             }
-            #endregion
 
-            #region Sub-types
-            public delegate TagLengthValue CreateElementMethod(Stream s);
-            public delegate void WriteElementMethod(Stream s, TagLengthValue value);
+            protected abstract void WriteTLVData(Stream s);
             #endregion
 
             #region IEquatable<TagLengthValue> Members
             public abstract bool Equals(TagLengthValue other);
             public override bool Equals(object obj) { return obj as TagLengthValue != null ? this.Equals(obj as TagLengthValue) : false; }
+            public abstract override int GetHashCode();
             #endregion
 
             #region AApiVersionedFields
@@ -166,6 +158,78 @@ namespace DWorldResource
             #endregion
 
             public string Value { get { return this.ValueBuilder; } }
+        }
+
+        public class TLVList<T> : DependentList<T>
+            where T : TagLengthValue, IEquatable<T>
+        {
+            #region Attributes
+            UInt32 expectedLength;
+            #endregion
+
+            #region Constructors
+            public TLVList(EventHandler handler, UInt32 expectedLength = 0)
+                : base(handler)
+            {
+                this.expectedLength = expectedLength;
+            }
+            public TLVList(EventHandler handler, Stream s, UInt32 expectedLength)
+                : this(null, expectedLength)
+            {
+                elementHandler = handler;
+                Parse(s);
+                this.handler = handler;
+            }
+            public TLVList(EventHandler handler, IEnumerable<T> collection)
+                : this(null, 0)
+            {
+                elementHandler = handler;
+                this.AddRange(collection);
+                this.handler = handler;
+            }
+            #endregion
+
+            #region Data I/O
+            protected override void Parse(Stream s)
+            {
+                long maxPos = s.Position + expectedLength;
+                this.Clear();
+                while (s.Position < maxPos)
+                    Add((T)TagLengthValue.TagLengthValueFactory(0, handler, s));
+            }
+            public override void UnParse(Stream s) { foreach (var element in this) element.UnParse(s); }
+
+            protected override T CreateElement(Stream s) { throw new InvalidOperationException(); }
+            protected override void WriteElement(Stream s, T element) { throw new InvalidOperationException(); }
+            #endregion
+
+            #region AHandlerList<T>
+            public T this[String index]
+            {
+                get
+                {
+                    int i = this.FindIndex(t => t.tag == (uint)FOURCC(index));
+                    return (i < 0) ? null : base[i];
+                }
+                set
+                {
+                    int i = this.FindIndex(t => t.tag == (uint)FOURCC(index));
+                    if (i < 0)
+                    {
+                        base.Add(value);
+                        OnListChanged();
+                    }
+                    else
+                    {
+                        if (!this[i].Equals(value))
+                        {
+                            base[i] = value;
+                            OnListChanged();
+                        }
+                    }
+                }
+            }
+            #endregion
         }
 
         public class TLVList : DependentList<TagLengthValue>
@@ -204,46 +268,290 @@ namespace DWorldResource
                 long maxPos = s.Position + expectedLength;
                 this.Clear();
                 while (s.Position < maxPos)
-                    base.Add(TagLengthValue.TagLengthValueFactory(0, handler, s, validTags));
+                    Add(TagLengthValue.TagLengthValueFactory(0, handler, s));
             }
             public override void UnParse(Stream s) { foreach (var element in this) element.UnParse(s); }
 
             protected override TagLengthValue CreateElement(Stream s) { throw new InvalidOperationException(); }
             protected override void WriteElement(Stream s, TagLengthValue element) { throw new InvalidOperationException(); }
             #endregion
+
+            #region DependentList<T>
+            public override void Add(TagLengthValue item)
+            {
+                if (!validTags.Contains(FOURCC(item.tag)))
+                    throw new InvalidOperationException(String.Format("Invalid item tag: '{0}'; expected one of: ('{1}')", FOURCC(item.tag), String.Join("', '", validTags)));
+                base.Add(item);
+            }
+            #endregion
+
+            #region AHandlerList<T>
+            public TagLengthValue this[String index]
+            {
+                get
+                {
+                    int i = this.FindIndex(t => t.tag == (uint)FOURCC(index));
+                    return (i < 0) ? null : base[i];
+                }
+                set
+                {
+                    if (!validTags.Contains(index))
+                        throw new InvalidOperationException(String.Format("Invalid item tag: '{0}'; expected one of: ('{1}')", index, String.Join("', '", validTags)));
+
+                    int i = this.FindIndex(t => t.tag == (uint)FOURCC(index));
+                    if (i < 0)
+                    {
+                        base.Add(value);
+                        OnListChanged();
+                    }
+                    else
+                    {
+                        if (!this[i].Equals(value))
+                        {
+                            base[i] = value;
+                            OnListChanged();
+                        }
+                    }
+                }
+            }
+            #endregion
         }
 
-        public class TLVListChunk : TagLengthValue
+        public class OMGSChunk : TagLengthValue, IEquatable<OMGSChunk>
         {
+            private const String _tag = "OMGS";
+
             #region Attributes
-            IEnumerable<String> validTags;
-            private TLVList tlvList;
+            private TLVList<OMGRChunk> omgsChunks;
             #endregion
 
             #region Constructors
-            public TLVListChunk(int apiVersion, EventHandler handler, UInt32 tag, IEnumerable<String> validTags) : base(apiVersion, handler, tag) { this.validTags = validTags; this.tlvList = new TLVList(handler, 0, validTags); }
-            public TLVListChunk(int apiVersion, EventHandler handler, UInt32 tag, IEnumerable<String> validTags, Stream s, UInt32 expectedLength) : this(apiVersion, handler, tag, validTags) { Parse(s, expectedLength); }
-            public TLVListChunk(int apiVersion, EventHandler handler, UInt32 tag, IEnumerable<String> validTags, TLVListChunk basis) : base(apiVersion, handler, tag) { tlvList = new TLVList(handler, basis.tlvList, validTags); }
+            public OMGSChunk(int apiVersion, EventHandler handler) : base(apiVersion, handler, (uint)FOURCC(_tag)) { omgsChunks = new TLVList<OMGRChunk>(handler); }
+            public OMGSChunk(int apiVersion, EventHandler handler, Stream s, UInt32 expectedLength) : base(apiVersion, handler, (uint)FOURCC(_tag)) { omgsChunks = new TLVList<OMGRChunk>(handler, s, expectedLength); }
+            public OMGSChunk(int apiVersion, EventHandler handler, OMGSChunk basis) : base(apiVersion, handler, (uint)FOURCC(_tag)) { omgsChunks = new TLVList<OMGRChunk>(handler, basis.omgsChunks); }
             #endregion
 
             #region Data I/O
-            private void Parse(Stream s, UInt32 expectedLength) { tlvList = new TLVList(handler, s, expectedLength, validTags); }
-            public void UnParse(Stream s) { tlvList.UnParse(s); }
+            protected override void WriteTLVData(Stream s) { omgsChunks.UnParse(s); }
             #endregion
 
-            #region IEquatable<TagLengthValue> Members
-            public bool Equals(TLVListChunk other) { return tag.Equals(other.tag) && tlvList.Equals(other.tlvList); }
-            public override bool Equals(TagLengthValue obj) { return obj as TLVListChunk != null ? this.Equals(obj as TLVListChunk) : false; }
+            #region IEquatable<OMGSChunk> Members
+            public bool Equals(OMGSChunk other) { return tag.Equals(other.tag) && omgsChunks.Equals(other.omgsChunks); }
+            public override bool Equals(TagLengthValue other) { return other is OMGSChunk != null && Equals(other as OMGSChunk); }
+            public override int GetHashCode() { return tag.GetHashCode() ^ omgsChunks.GetHashCode(); }
             #endregion
 
             #region Content Fields
             [MinimumVersion(1)]
             [MaximumVersion(recommendedApiVersion)]
             [ElementPriority(1)]
-            public TLVList Chunks { get { return tlvList; } set { if (!tlvList.Equals(value)) { tlvList = new TLVList(handler, value, validTags); OnElementChanged(); } } }
+            public TLVList<OMGRChunk> OMGRChunks { get { return omgsChunks; } set { if (!omgsChunks.Equals(value)) { omgsChunks = new TLVList<OMGRChunk>(handler, value); OnElementChanged(); } } }
+            #endregion
+        }
+
+        public class OMGRChunk : TagLengthValue, IEquatable<OMGRChunk>
+        {
+            private const String _tag = "OMGR";
+            private static IEnumerable<String> validTags = new[] { "ID  ", "LOT ", "OBJ ", "REFS" };
+
+            #region Attributes
+            private TLVList omgrChunks;
             #endregion
 
-            public string Value { get { return this.ValueBuilder; } }
+            #region Constructors
+            public OMGRChunk(int apiVersion, EventHandler handler) : base(apiVersion, handler, (uint)FOURCC(_tag)) { omgrChunks = new TLVList(handler, 0, validTags); }
+            public OMGRChunk(int apiVersion, EventHandler handler, Stream s, UInt32 expectedLength) : base(apiVersion, handler, (uint)FOURCC(_tag)) { omgrChunks = new TLVList(handler, s, expectedLength, validTags); }
+            public OMGRChunk(int apiVersion, EventHandler handler, OMGRChunk basis) : base(apiVersion, handler, (uint)FOURCC(_tag)) { omgrChunks = new TLVList(handler, basis.omgrChunks, validTags); }
+            #endregion
+
+            #region Data I/O
+            protected override void WriteTLVData(Stream s) { omgrChunks.UnParse(s); }
+            #endregion
+
+            #region IEquatable<OMGRChunk> Members
+            public bool Equals(OMGRChunk other) { return tag.Equals(other.tag) && omgrChunks.Equals(other.omgrChunks); }
+            public override bool Equals(TagLengthValue other) { return other is OMGRChunk != null && Equals(other as OMGRChunk); }
+            public override int GetHashCode() { return tag.GetHashCode() ^ omgrChunks.GetHashCode(); }
+            #endregion
+
+            #region AApiVersionedFields
+            public override List<string> ContentFields { get { return GetContentFields(requestedApiVersion, this.GetType()).Where(tag => !validTags.Contains(tag) || omgrChunks[tag] != null).ToList(); } }
+            #endregion
+
+            #region Content Fields
+            [MinimumVersion(1)]
+            [MaximumVersion(recommendedApiVersion)]
+            [ElementPriority(1)]
+            public UInt64 ID { get { return ((UInt64Chunk)omgrChunks["ID  "]).Data; } set { if (ID != value) { ((UInt64Chunk)omgrChunks["ID  "]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(2)]
+            //public LOT_Chunk LOT { get { return ((LOT_Chunk)omgrChunks["LOT "]); } set { if (LOT != value) { omgrChunks["LOT "] = new LOT_Chunk(requestedApiVersion, handler, value); OnElementChanged(); } } }
+            public TLVList<LOT_Chunk> LOT
+            {
+                get
+                {
+                    //TagLengthValue tlv = omgrChunks["LOT "];
+                    IEnumerable<LOT_Chunk> itlv = omgrChunks.FindAll(t => t.tag == (uint)FOURCC("LOT ")).Select(t => (LOT_Chunk)t);
+                    return new TLVList<LOT_Chunk>(handler, itlv);
+                }
+                set
+                {
+                    if (!LOT.Equals(value))
+                    {
+                        omgrChunks.RemoveAll(t => t.tag.Equals(FOURCC("LOT ")));
+                        omgrChunks.AddRange(value);
+                        OnElementChanged();
+                    }
+                }
+            }
+            [ElementPriority(3)]
+            public TLVList<OBJ_Chunk> OBJ
+            {
+                get
+                {
+                    IEnumerable<OBJ_Chunk> itlv = omgrChunks.FindAll(t => t.tag == (uint)FOURCC("OBJ ")).Select(t => (OBJ_Chunk)t);
+                    return new TLVList<OBJ_Chunk>(handler, itlv);
+                }
+                set
+                {
+                    if (!OBJ.Equals(value))
+                    {
+                        omgrChunks.RemoveAll(t => t.tag.Equals(FOURCC("OBJ ")));
+                        omgrChunks.AddRange(value);
+                        OnElementChanged();
+                    }
+                }
+            }
+            // REFS is "Unused".
+            #endregion
+        }
+
+        public class LOT_Chunk : TagLengthValue, IEquatable<LOT_Chunk>
+        {
+            private const String _tag = "LOT ";
+            private static IEnumerable<String> validTags = new[] { "SIZX", "SIZZ", "POS ", "ROT " };
+
+            #region Attributes
+            private TLVList lotChunks;
+            #endregion
+
+            #region Constructors
+            public LOT_Chunk(int apiVersion, EventHandler handler) : base(apiVersion, handler, (uint)FOURCC(_tag))
+            {
+                lotChunks = new TLVList(handler, new TagLengthValue[] {
+                    new UInt32Chunk(apiVersion, handler, (uint)FOURCC("SIZX")),
+                    new UInt32Chunk(apiVersion, handler, (uint)FOURCC("SIZX")),
+                    new VertexChunk(apiVersion, handler, (uint)FOURCC("POS ")),
+                    new SingleChunk(apiVersion, handler, (uint)FOURCC("ROT ")),
+                }, validTags);
+            }
+            public LOT_Chunk(int apiVersion, EventHandler handler, Stream s, UInt32 expectedLength) : base(apiVersion, handler, (uint)FOURCC(_tag)) { lotChunks = new TLVList(handler, s, expectedLength, validTags); }
+            public LOT_Chunk(int apiVersion, EventHandler handler, LOT_Chunk basis) : base(apiVersion, handler, (uint)FOURCC(_tag)) { lotChunks = new TLVList(handler, basis.lotChunks, validTags); }
+            #endregion
+
+            #region Data I/O
+            protected override void WriteTLVData(Stream s) { lotChunks.UnParse(s); }
+            #endregion
+
+            #region IEquatable<LOT_Chunk> Members
+            public bool Equals(LOT_Chunk other) { return tag.Equals(other.tag) && lotChunks.Equals(other.lotChunks); }
+            public override bool Equals(TagLengthValue other) { return other is LOT_Chunk != null && Equals(other as LOT_Chunk); }
+            public override int GetHashCode() { return tag.GetHashCode() ^ lotChunks.GetHashCode(); }
+            #endregion
+
+            #region AApiVersionedFields
+            public override List<string> ContentFields { get { return GetContentFields(requestedApiVersion, this.GetType()).Where(tag => !validTags.Contains(tag) || lotChunks[tag] != null).ToList(); } }
+            #endregion
+
+            #region Content Fields
+            [MinimumVersion(1)]
+            [MaximumVersion(recommendedApiVersion)]
+            [ElementPriority(1)]
+            public UInt32 SIZX { get { return ((UInt32Chunk)lotChunks["SIZX"]).Data; } set { if (SIZX != value) { ((UInt32Chunk)lotChunks["SIZX"]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(2)]
+            public UInt32 SIZZ { get { return ((UInt32Chunk)lotChunks["SIZZ"]).Data; } set { if (SIZZ != value) { ((UInt32Chunk)lotChunks["SIZZ"]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(3)]
+            public Vertex POS { get { return ((VertexChunk)lotChunks["POS "]).Data; } set { if (POS != value) { ((VertexChunk)lotChunks["POS "]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(4)]
+            public Single ROT { get { return ((SingleChunk)lotChunks["ROT "]).Data; } set { if (ROT != value) { ((SingleChunk)lotChunks["ROT "]).Data = value; OnElementChanged(); } } }
+            #endregion
+        }
+
+        public class OBJ_Chunk : TagLengthValue, IEquatable<OBJ_Chunk>
+        {
+            private const String _tag = "OBJ ";
+            private static IEnumerable<String> validTags = new[] { "ID  ", "POS ", "ROT ", "MODL", "LEVL", "SCAL", "SCRP", "TRES", "DEFG", "DGUD", "MLOD", "PTID", "SLOT" };
+
+            #region Attributes
+            private TLVList objChunks;
+            #endregion
+
+            #region Constructors
+            public OBJ_Chunk(int apiVersion, EventHandler handler)
+                : base(apiVersion, handler, (uint)FOURCC(_tag))
+            {
+                objChunks = new TLVList(handler, new TagLengthValue[] {
+                    new UInt64Chunk(apiVersion, handler, (uint)FOURCC("ID  ")),
+                    new VertexChunk(apiVersion, handler, (uint)FOURCC("POS ")),
+                    new QuaternionChunk(apiVersion, handler, (uint)FOURCC("ROT ")),
+                    new TGIBlockChunk(apiVersion, handler, (uint)FOURCC("MODL")),
+                    new UInt32Chunk(apiVersion, handler, (uint)FOURCC("SIZX")),
+                    new Int32Chunk(apiVersion, handler, (uint)FOURCC("LEVL")),
+                    new SingleChunk(apiVersion, handler, (uint)FOURCC("SCAL")),
+                    new StringChunk(apiVersion, handler, (uint)FOURCC("SCRP")),
+                    new UInt32Chunk(apiVersion, handler, (uint)FOURCC("DEFG")),
+                    new UInt64Chunk(apiVersion, handler, (uint)FOURCC("DGUD")),
+                    new ByteChunk(apiVersion, handler, (uint)FOURCC("MLOD")),
+                    new UInt64Chunk(apiVersion, handler, (uint)FOURCC("PTID")),
+                    new UInt32Chunk(apiVersion, handler, (uint)FOURCC("SLOT")),
+                }, validTags);
+            }
+            public OBJ_Chunk(int apiVersion, EventHandler handler, Stream s, UInt32 expectedLength) : base(apiVersion, handler, (uint)FOURCC(_tag)) { objChunks = new TLVList(handler, s, expectedLength, validTags); }
+            public OBJ_Chunk(int apiVersion, EventHandler handler, OBJ_Chunk basis) : base(apiVersion, handler, (uint)FOURCC(_tag)) { objChunks = new TLVList(handler, basis.objChunks, validTags); }
+            #endregion
+
+            #region Data I/O
+            protected override void WriteTLVData(Stream s) { objChunks.UnParse(s); }
+            #endregion
+
+            #region IEquatable<OBJ_Chunk> Members
+            public bool Equals(OBJ_Chunk other) { return tag.Equals(other.tag) && objChunks.Equals(other.objChunks); }
+            public override bool Equals(TagLengthValue other) { return other is OBJ_Chunk != null && Equals(other as OBJ_Chunk); }
+            public override int GetHashCode() { return tag.GetHashCode() ^ objChunks.GetHashCode(); }
+            #endregion
+
+            #region AApiVersionedFields
+            public override List<string> ContentFields { get { return GetContentFields(requestedApiVersion, this.GetType()).Where(tag => !validTags.Contains(tag) || objChunks[tag] != null).ToList(); } }
+            #endregion
+
+            #region Content Fields
+            [MinimumVersion(1)]
+            [MaximumVersion(recommendedApiVersion)]
+            [ElementPriority(1)]
+            public UInt64 ID { get { return ((UInt64Chunk)objChunks["ID  "]).Data; } set { if (ID != value) { ((UInt64Chunk)objChunks["ID  "]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(2)]
+            public Vertex POS { get { return ((VertexChunk)objChunks["POS "]).Data; } set { if (!POS.Equals(value)) { ((VertexChunk)objChunks["POS "]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(3)]
+            public Quaternion ROT { get { return ((QuaternionChunk)objChunks["ROT "]).Data; } set { if (!ROT.Equals(value)) { ((QuaternionChunk)objChunks["ROT "]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(4)]
+            public TGIBlock MODL { get { return ((TGIBlockChunk)objChunks["MODL"]).Data; } set { if (!MODL.Equals(value)) { ((TGIBlockChunk)objChunks["MODL"]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(5)]
+            public Int32 LEVL { get { return ((Int32Chunk)objChunks["LEVL"]).Data; } set { if (LEVL != value) { ((Int32Chunk)objChunks["LEVL"]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(6)]
+            public Single SCAL { get { return ((SingleChunk)objChunks["SCAL"]).Data; } set { if (SCAL != value) { ((SingleChunk)objChunks["SCAL"]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(7)]
+            public String SCRP { get { return ((StringChunk)objChunks["SCRP"]).Data; } set { if (SCRP != value) { ((StringChunk)objChunks["SCRP"]).Data = value; OnElementChanged(); } } }
+            // TRES is "Unused".
+            [ElementPriority(8)]
+            public UInt32 DEFG { get { return ((UInt32Chunk)objChunks["DEFG"]).Data; } set { if (DEFG != value) { ((UInt32Chunk)objChunks["DEFG"]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(9)]
+            public UInt64 DGUD { get { return ((UInt64Chunk)objChunks["DGUD"]).Data; } set { if (DGUD != value) { ((UInt64Chunk)objChunks["DGUD"]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(10)]
+            public Byte MLOD { get { return ((ByteChunk)objChunks["MLOD"]).Data; } set { if (MLOD != value) { ((ByteChunk)objChunks["MLOD"]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(11)]
+            public UInt64 PTID { get { return ((UInt64Chunk)objChunks["PTID"]).Data; } set { if (PTID != value) { ((UInt64Chunk)objChunks["PTID"]).Data = value; OnElementChanged(); } } }
+            [ElementPriority(12)]
+            public UInt32 SLOT { get { return ((UInt32Chunk)objChunks["SLOT"]).Data; } set { if (SLOT != value) { ((UInt32Chunk)objChunks["SLOT"]).Data = value; OnElementChanged(); } } }
+            #endregion
         }
 
         public class UnusedChunk : TagLengthValue
@@ -263,12 +571,13 @@ namespace DWorldResource
                 data = new byte[expectedLength];
                 s.Read(data, 0, (int)expectedLength);
             }
-            public void UnParse(Stream s) { new BinaryWriter(s).Write(data); }
+            protected override void WriteTLVData(Stream s) { new BinaryWriter(s).Write(data); }
             #endregion
 
             #region IEquatable<TagLengthValue> Members
             public bool Equals(UnusedChunk other) { return tag.Equals(other.tag) && data.Equals(other.data); }
             public override bool Equals(TagLengthValue obj) { return obj as UnusedChunk != null ? this.Equals(obj as UnusedChunk) : false; }
+            public override int GetHashCode() { return tag.GetHashCode() ^ data.GetHashCode(); }
             #endregion
 
             #region Content Fields
@@ -296,7 +605,7 @@ namespace DWorldResource
             }
             #endregion
 
-            public string Value { get { return this.ValueBuilder; } }
+            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class UInt64Chunk : TagLengthValue
@@ -312,12 +621,13 @@ namespace DWorldResource
 
             #region Data I/O
             private void Parse(Stream s) { data = new BinaryReader(s).ReadUInt64(); }
-            public void UnParse(Stream s) { new BinaryWriter(s).Write(data); }
+            protected override void WriteTLVData(Stream s) { new BinaryWriter(s).Write(data); }
             #endregion
 
             #region IEquatable<TagLengthValue> Members
             public bool Equals(UInt64Chunk other) { return tag.Equals(other.tag) && data.Equals(other.data); }
             public override bool Equals(TagLengthValue obj) { return obj as UInt64Chunk != null ? this.Equals(obj as UInt64Chunk) : false; }
+            public override int GetHashCode() { return tag.GetHashCode() ^ data.GetHashCode(); }
             #endregion
 
             #region Content Fields
@@ -327,7 +637,7 @@ namespace DWorldResource
             public UInt64 Data { get { return data; } set { if (data != value) { data = value; OnElementChanged(); } } }
             #endregion
 
-            public string Value { get { return this.ValueBuilder; } }
+            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class UInt32Chunk : TagLengthValue
@@ -343,12 +653,13 @@ namespace DWorldResource
 
             #region Data I/O
             private void Parse(Stream s) { data = new BinaryReader(s).ReadUInt32(); }
-            public void UnParse(Stream s) { new BinaryWriter(s).Write(data); }
+            protected override void WriteTLVData(Stream s) { new BinaryWriter(s).Write(data); }
             #endregion
 
             #region IEquatable<TagLengthValue> Members
             public bool Equals(UInt32Chunk other) { return data.Equals(other.data); }
             public override bool Equals(TagLengthValue obj) { return obj as UInt32Chunk != null ? this.Equals(obj as UInt32Chunk) : false; }
+            public override int GetHashCode() { return tag.GetHashCode() ^ data.GetHashCode(); }
             #endregion
 
             #region Content Fields
@@ -358,7 +669,7 @@ namespace DWorldResource
             public UInt32 Data { get { return data; } set { if (data != value) { data = value; OnElementChanged(); } } }
             #endregion
 
-            public string Value { get { return this.ValueBuilder; } }
+            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class ByteChunk : TagLengthValue
@@ -374,12 +685,13 @@ namespace DWorldResource
 
             #region Data I/O
             private void Parse(Stream s) { data = new BinaryReader(s).ReadByte(); }
-            public void UnParse(Stream s) { new BinaryWriter(s).Write(data); }
+            protected override void WriteTLVData(Stream s) { new BinaryWriter(s).Write(data); }
             #endregion
 
             #region IEquatable<TagLengthValue> Members
             public bool Equals(ByteChunk other) { return data.Equals(other.data); }
             public override bool Equals(TagLengthValue obj) { return obj as ByteChunk != null ? this.Equals(obj as ByteChunk) : false; }
+            public override int GetHashCode() { return tag.GetHashCode() ^ data.GetHashCode(); }
             #endregion
 
             #region Content Fields
@@ -389,7 +701,7 @@ namespace DWorldResource
             public Byte Data { get { return data; } set { if (data != value) { data = value; OnElementChanged(); } } }
             #endregion
 
-            public string Value { get { return this.ValueBuilder; } }
+            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class Int32Chunk : TagLengthValue
@@ -405,12 +717,13 @@ namespace DWorldResource
 
             #region Data I/O
             private void Parse(Stream s) { data = new BinaryReader(s).ReadInt32(); }
-            public void UnParse(Stream s) { new BinaryWriter(s).Write(data); }
+            protected override void WriteTLVData(Stream s) { new BinaryWriter(s).Write(data); }
             #endregion
 
             #region IEquatable<TagLengthValue> Members
             public bool Equals(Int32Chunk other) { return data.Equals(other.data); }
             public override bool Equals(TagLengthValue obj) { return obj as Int32Chunk != null ? this.Equals(obj as Int32Chunk) : false; }
+            public override int GetHashCode() { return tag.GetHashCode() ^ data.GetHashCode(); }
             #endregion
 
             #region Content Fields
@@ -420,7 +733,7 @@ namespace DWorldResource
             public Int32 Data { get { return data; } set { if (data != value) { data = value; OnElementChanged(); } } }
             #endregion
 
-            public string Value { get { return this.ValueBuilder; } }
+            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class SingleChunk : TagLengthValue
@@ -436,12 +749,13 @@ namespace DWorldResource
 
             #region Data I/O
             private void Parse(Stream s) { data = new BinaryReader(s).ReadSingle(); }
-            public void UnParse(Stream s) { new BinaryWriter(s).Write(data); }
+            protected override void WriteTLVData(Stream s) { new BinaryWriter(s).Write(data); }
             #endregion
 
             #region IEquatable<TagLengthValue> Members
             public bool Equals(SingleChunk other) { return data.Equals(other.data); }
             public override bool Equals(TagLengthValue obj) { return obj as SingleChunk != null ? this.Equals(obj as SingleChunk) : false; }
+            public override int GetHashCode() { return tag.GetHashCode() ^ data.GetHashCode(); }
             #endregion
 
             #region Content Fields
@@ -451,7 +765,7 @@ namespace DWorldResource
             public Single Data { get { return data; } set { if (data != value) { data = value; OnElementChanged(); } } }
             #endregion
 
-            public string Value { get { return this.ValueBuilder; } }
+            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class VertexChunk : TagLengthValue
@@ -467,12 +781,13 @@ namespace DWorldResource
 
             #region Data I/O
             private void Parse(Stream s) { data = new Vertex(requestedApiVersion, handler, s); }
-            public void UnParse(Stream s) { data.UnParse(s); }
+            protected override void WriteTLVData(Stream s) { data.UnParse(s); }
             #endregion
 
             #region IEquatable<TagLengthValue> Members
             public bool Equals(VertexChunk other) { return tag.Equals(other.tag) && data.Equals(other.data); }
             public override bool Equals(TagLengthValue obj) { return obj as VertexChunk != null ? this.Equals(obj as VertexChunk) : false; }
+            public override int GetHashCode() { return tag.GetHashCode() ^ data.GetHashCode(); }
             #endregion
 
             #region Content Fields
@@ -482,7 +797,7 @@ namespace DWorldResource
             public Vertex Data { get { return data; } set { if (!data.Equals(value)) { data = new Vertex(requestedApiVersion, handler, value); OnElementChanged(); } } }
             #endregion
 
-            public string Value { get { return this.ValueBuilder; } }
+            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class QuaternionChunk : TagLengthValue
@@ -498,12 +813,13 @@ namespace DWorldResource
 
             #region Data I/O
             private void Parse(Stream s) { data = new Quaternion(requestedApiVersion, handler, s); }
-            public void UnParse(Stream s) { data.UnParse(s); }
+            protected override void WriteTLVData(Stream s) { data.UnParse(s); }
             #endregion
 
             #region IEquatable<TagLengthValue> Members
             public bool Equals(QuaternionChunk other) { return tag.Equals(other.tag) && data.Equals(other.data); }
             public override bool Equals(TagLengthValue obj) { return obj as QuaternionChunk != null ? this.Equals(obj as QuaternionChunk) : false; }
+            public override int GetHashCode() { return tag.GetHashCode() ^ data.GetHashCode(); }
             #endregion
 
             #region Content Fields
@@ -513,7 +829,7 @@ namespace DWorldResource
             public Quaternion Data { get { return data; } set { if (!data.Equals(value)) { data = new Quaternion(requestedApiVersion, handler, value); OnElementChanged(); } } }
             #endregion
 
-            public string Value { get { return this.ValueBuilder; } }
+            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class TGIBlockChunk : TagLengthValue
@@ -529,12 +845,13 @@ namespace DWorldResource
 
             #region Data I/O
             private void Parse(Stream s) { data = new TGIBlock(requestedApiVersion, handler, s); }
-            public void UnParse(Stream s) { data.UnParse(s); }
+            protected override void WriteTLVData(Stream s) { data.UnParse(s); }
             #endregion
 
             #region IEquatable<TagLengthValue> Members
             public bool Equals(TGIBlockChunk other) { return tag.Equals(other.tag) && data.Equals(other.data); }
             public override bool Equals(TagLengthValue obj) { return obj as TGIBlockChunk != null ? this.Equals(obj as TGIBlockChunk) : false; }
+            public override int GetHashCode() { return tag.GetHashCode() ^ data.GetHashCode(); }
             #endregion
 
             #region Content Fields
@@ -544,7 +861,7 @@ namespace DWorldResource
             public TGIBlock Data { get { return data; } set { if (!data.Equals(value)) { data = new TGIBlock(requestedApiVersion, handler, value); OnElementChanged(); } } }
             #endregion
 
-            public string Value { get { return this.ValueBuilder; } }
+            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class StringChunk : TagLengthValue
@@ -560,12 +877,13 @@ namespace DWorldResource
 
             #region Data I/O
             private void Parse(Stream s, UInt32 expectedLength) { data = new String(new BinaryReader(s).ReadBytes((int)expectedLength).Select(x => (char)x).ToArray()); }
-            public void UnParse(Stream s) { new BinaryWriter(s).Write(data.ToCharArray().Select(x => (byte)x).ToArray()); }
+            protected override void WriteTLVData(Stream s) { new BinaryWriter(s).Write(data.ToCharArray().Select(x => (byte)x).ToArray()); }
             #endregion
 
             #region IEquatable<TagLengthValue> Members
             public bool Equals(StringChunk other) { return tag.Equals(other.tag) && data.Equals(other.data); }
             public override bool Equals(TagLengthValue obj) { return obj as StringChunk != null ? this.Equals(obj as StringChunk) : false; }
+            public override int GetHashCode() { return tag.GetHashCode() ^ data.GetHashCode(); }
             #endregion
 
             #region Content Fields
@@ -575,9 +893,9 @@ namespace DWorldResource
             public String Data { get { return data; } set { if (data != value) { data = value; OnElementChanged(); } } }
             #endregion
 
-            public string Value { get { return this.ValueBuilder; } }
+            //public string Value { get { return this.ValueBuilder; } }
         }
-        
+
         #endregion
 
         #region AApiVersionedFields
@@ -589,7 +907,7 @@ namespace DWorldResource
         [MinimumVersion(1)]
         [MaximumVersion(recommendedApiVersion)]
         [ElementPriority(1)]
-        public TLVListChunk ObjectManager { get { return objectManager; } set { if (!objectManager.Equals(value)) { objectManager = new TLVListChunk(requestedApiVersion, OnResourceChanged, (uint)FOURCC("OMGS"), new[] { "OMGR" }, value); OnResourceChanged(this, EventArgs.Empty); } } }
+        public OMGSChunk ObjectManager { get { return objectManager; } set { if (!objectManager.Equals(value)) { objectManager = new OMGSChunk(requestedApiVersion, OnResourceChanged, value); OnResourceChanged(this, EventArgs.Empty); } } }
         #endregion
 
         public string Value { get { return this.ValueBuilder; } }
