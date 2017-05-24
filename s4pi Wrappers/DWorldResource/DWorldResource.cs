@@ -397,7 +397,7 @@ namespace DWorldResource
                     if (!LOT.Equals(value))
                     {
                         omgrChunks.RemoveAll(t => t.tag.Equals(FOURCC("LOT ")));
-                        omgrChunks.AddRange(value);
+                        value.ForEach(l => omgrChunks.Add(l));
                         OnElementChanged();
                     }
                 }
@@ -415,7 +415,7 @@ namespace DWorldResource
                     if (!OBJ.Equals(value))
                     {
                         omgrChunks.RemoveAll(t => t.tag.Equals(FOURCC("OBJ ")));
-                        omgrChunks.AddRange(value);
+                        value.ForEach(o => omgrChunks.Add(o));
                         OnElementChanged();
                     }
                 }
