@@ -389,7 +389,6 @@ namespace DWorldResource
             {
                 get
                 {
-                    //TagLengthValue tlv = omgrChunks["LOT "];
                     IEnumerable<LOT_Chunk> itlv = omgrChunks.FindAll(t => t.tag == (uint)FOURCC("LOT ")).Select(t => (LOT_Chunk)t);
                     return new TLVList<LOT_Chunk>(handler, itlv);
                 }
@@ -604,8 +603,6 @@ namespace DWorldResource
                 }
             }
             #endregion
-
-            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class UInt64Chunk : TagLengthValue
@@ -636,8 +633,6 @@ namespace DWorldResource
             [ElementPriority(1)]
             public UInt64 Data { get { return data; } set { if (data != value) { data = value; OnElementChanged(); } } }
             #endregion
-
-            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class UInt32Chunk : TagLengthValue
@@ -668,8 +663,6 @@ namespace DWorldResource
             [ElementPriority(1)]
             public UInt32 Data { get { return data; } set { if (data != value) { data = value; OnElementChanged(); } } }
             #endregion
-
-            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class ByteChunk : TagLengthValue
@@ -700,8 +693,6 @@ namespace DWorldResource
             [ElementPriority(1)]
             public Byte Data { get { return data; } set { if (data != value) { data = value; OnElementChanged(); } } }
             #endregion
-
-            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class Int32Chunk : TagLengthValue
@@ -732,8 +723,6 @@ namespace DWorldResource
             [ElementPriority(1)]
             public Int32 Data { get { return data; } set { if (data != value) { data = value; OnElementChanged(); } } }
             #endregion
-
-            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class SingleChunk : TagLengthValue
@@ -764,8 +753,6 @@ namespace DWorldResource
             [ElementPriority(1)]
             public Single Data { get { return data; } set { if (data != value) { data = value; OnElementChanged(); } } }
             #endregion
-
-            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class VertexChunk : TagLengthValue
@@ -796,8 +783,6 @@ namespace DWorldResource
             [ElementPriority(1)]
             public Vertex Data { get { return data; } set { if (!data.Equals(value)) { data = new Vertex(requestedApiVersion, handler, value); OnElementChanged(); } } }
             #endregion
-
-            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class QuaternionChunk : TagLengthValue
@@ -828,8 +813,6 @@ namespace DWorldResource
             [ElementPriority(1)]
             public Quaternion Data { get { return data; } set { if (!data.Equals(value)) { data = new Quaternion(requestedApiVersion, handler, value); OnElementChanged(); } } }
             #endregion
-
-            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class TGIBlockChunk : TagLengthValue
@@ -860,8 +843,6 @@ namespace DWorldResource
             [ElementPriority(1)]
             public TGIBlock Data { get { return data; } set { if (!data.Equals(value)) { data = new TGIBlock(requestedApiVersion, handler, value); OnElementChanged(); } } }
             #endregion
-
-            //public string Value { get { return this.ValueBuilder; } }
         }
 
         public class StringChunk : TagLengthValue
@@ -892,8 +873,6 @@ namespace DWorldResource
             [ElementPriority(1)]
             public String Data { get { return data; } set { if (data != value) { data = value; OnElementChanged(); } } }
             #endregion
-
-            //public string Value { get { return this.ValueBuilder; } }
         }
 
         #endregion
