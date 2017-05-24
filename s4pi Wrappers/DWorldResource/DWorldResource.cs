@@ -129,9 +129,7 @@ namespace DWorldResource
             public void UnParse(Stream s)
             {
                 BinaryWriter w = new BinaryWriter(s);
-
-                w.Write(FOURCC(tag));
-
+                w.Write(tag);
                 long pos = s.Position;
                 w.Write((UInt32)0);
 
@@ -139,7 +137,7 @@ namespace DWorldResource
 
                 long newPos = s.Position;
                 s.Seek(pos, SeekOrigin.Begin);
-                w.Write((UInt32)(newPos - pos));
+                w.Write((UInt32)(newPos - pos - sizeof(UInt32)));
                 s.Seek(newPos, SeekOrigin.Begin);
             }
 
