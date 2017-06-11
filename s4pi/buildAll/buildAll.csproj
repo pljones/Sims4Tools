@@ -131,7 +131,7 @@
     </ProjectReference>
     <ProjectReference Include="..\..\s4pi Extras\s4piControls\s4piControls.csproj">
       <Project>{DF6E6825-5488-43EC-81A5-0EE87945228B}</Project>
-      <Name>s3piControls</Name>
+      <Name>s4piControls</Name>
     </ProjectReference>
     <ProjectReference Include="..\..\s4pi Wrappers\DefaultResource\DefaultResource.csproj">
       <Project>{06330E2B-9F3F-4A45-8B47-11795F5100FB}</Project>
